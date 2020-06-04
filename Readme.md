@@ -11,7 +11,7 @@ os-tutorial确实为我学习操作系统打下了非常好的基础，它让我
 本项目的最初代码来源于os-tutorial的第23节，开发环境：macOS catalina, 需要你安装i386-gcc等开发环境，安装方法在我的笔记里：[系统的启动](https://github.com/isyiming/live-up/OS/OSpart1.md)
 
 
-### [第一部分：物理内存管理和分页](https://github.com/isyiming/live-up/ming_OS/part1.md)
+### [第一部分：物理内存管理和分页](https://github.com/isyiming/ming_OS/blob/master/part1.md)
 
 
 
