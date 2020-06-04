@@ -152,3 +152,16 @@ void clear_screen() {
 int get_offset(int col, int row) { return 2 * (row * MAX_COLS + col); }
 int get_offset_row(int offset) { return offset / (2 * MAX_COLS); }
 int get_offset_col(int offset) { return (offset - (get_offset_row(offset)*2*MAX_COLS))/2; }
+
+
+
+void print_int(int val){
+  char message[16] = "";
+  int_to_ascii(val,message);
+  kprint_at(message, -1, -1,WHITE_ON_BLACK);
+}
+void print_hex(uint32_t val){
+  char message[16] = "";
+  hex_to_ascii(val,message);
+  kprint_at(message, -1, -1,WHITE_ON_BLACK);
+}
