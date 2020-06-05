@@ -29,8 +29,8 @@
 #include "../libc/string.h"
 #include "../libc/pmm.h"
 
-// 支持的最大物理内存地址(512MB 0x20000000)
-#define PMM_END_ADDR   0x110000
+// 支持的最大物理内存地址(512MB 0x20000000) 我这个qemu模拟的i386不知道怎么回事，都没有0xF00000？有时间
+#define PMM_END_ADDR   0x900000
 #define PMM_START_ADDR 0x100000
 
 // 物理内存页框大小
@@ -49,11 +49,13 @@ typedef
    uint32_t topAddr;
 	uint32_t phy_page_count;//当前栈中保存的页面地址的数量，动态分配物理内存页的总数
 } PMM_STACK;
-
 PMM_STACK pmm_stack;
 
 // 初始化物理内存管理
 void init_pmm();
 uint32_t pmm_alloc_page();
+
+//以上关于pmm的代码，我们只是将物理内存分页管理了下。但是我们没有建立虚拟内存的映射
+
 
 #endif
