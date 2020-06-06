@@ -177,6 +177,8 @@ void initialise_paging()
 void switch_page_directory(page_directory_t *dir)
 {
    current_directory = dir;
+	 print_hex(&dir->tablesPhysical);
+
    asm volatile("mov %0, %%cr3":: "r"(&dir->tablesPhysical));
    uint32_t cr0;
    asm volatile("mov %%cr0, %0": "=r"(cr0));	//先将cr0寄存器的值取出来保存在变量cr0中
@@ -184,6 +186,7 @@ void switch_page_directory(page_directory_t *dir)
    asm volatile("mov %0, %%cr0":: "r"(cr0));
 }
 
+//输入虚拟内存地址，返回要获取的页物理内存地址
 page_t *get_page(uint32_t address, int make, page_directory_t *dir)
 {
    // Turn the address into an index.

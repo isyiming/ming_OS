@@ -20,12 +20,12 @@ void kernel_main() {
     kprint("kernel in memory start: ");      print_hex(kern_start);      kprint("\n");
     kprint("kernel in memory end  : ");      print_hex(kern_end);      kprint("\n");
 
-    // init_pmm();
+    init_pmm();
     // 打印保存页表条目的地址空间
-    // uint32_t *add=pmm_stack.PhysicalAddr;
-    // kprint("pmm_stack.PhysicalAddr start address: "); print_hex(add); kprint("\n");
-    // add=pmm_stack.topAddr;
-    // kprint("pmm_stack.PhysicalAddr end address: "); print_hex(add); kprint("\n");
+    uint32_t *add=pmm_stack.PhysicalAddr;
+    kprint("pmm_stack.PhysicalAddr start address: "); print_hex(add); kprint("\n");
+    add=pmm_stack.topAddr;
+    kprint("pmm_stack.PhysicalAddr end address: "); print_hex(add); kprint("\n");
 
 
     // uint32_t phys_addr;
@@ -39,8 +39,9 @@ void kernel_main() {
     initialise_paging();
     kprint("Hello, paging world!\n");
 
-    // uint32_t *ptr = (uint32_t*)0x1F000000;
-    // uint32_t do_page_fault = *ptr;
+    uint32_t *ptr = (uint32_t*)0x8000000;
+    uint32_t do_page_fault = *ptr;
+    print_int(do_page_fault);
 }
 
 void user_input(char *input) {

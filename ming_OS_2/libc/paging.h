@@ -39,12 +39,12 @@ typedef struct page_directory
    /**
       Array of pointers to pagetables.
    **/
-   page_table_t *tables[1024];
+   page_table_t *tables[8];
    /**
       Array of pointers to the pagetables above, but gives their *physical*
       location, for loading into the CR3 register.
    **/
-   uint32_t tablesPhysical[1024];
+   uint32_t tablesPhysical[PMM_END_ADDR/PMM_PAGE_SIZE];
    /**
       The physical address of tablesPhysical. This comes into play
       when we get our kernel heap allocated and the directory
