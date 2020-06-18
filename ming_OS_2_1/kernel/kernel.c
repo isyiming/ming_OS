@@ -38,7 +38,7 @@ void kernel_main() {
     // allc_addr = pmm_alloc_page();     print_hex(allc_addr); kprint("\n");
     //
     // //开启分页
-    // initialise_paging();
+    initialise_paging();
     kprint("Hello, paging world!\n");
     // uint32_t *ptr = (uint32_t*)0x1E000000;
     // uint32_t do_page_fault = *ptr;

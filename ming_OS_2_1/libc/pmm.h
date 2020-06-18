@@ -62,16 +62,5 @@ void init_pmm();
 uint32_t pmm_alloc_page();
 void pmm_free_page(uint32_t p);
 
-int run(void);
-int run1(void);
-int run2(void);
-int run3(void);
-int run4(void);
-int run5(void);
-int run6(void);
-int run7(void);
-// int run8(void);
-int run9(void);
-// int run10(void);
 
 #endif

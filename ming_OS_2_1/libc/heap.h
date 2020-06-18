@@ -11,7 +11,7 @@
 #include "../libc/mem.h"
 #include "../libc/ordered_array.h"
 
-#define KHEAP_START         0xC0000000 //堆堆起始地址 25MB处 0x20000000
+#define KHEAP_START         0x20000000 //堆堆起始地址 25MB处 0x20000000
 #define KHEAP_INITIAL_SIZE  0x100000  //堆堆初始化大小1MB 0x100000
 #define HEAP_INDEX_SIZE   0x20000
 #define HEAP_MAGIC        0x123890AB
