@@ -23,9 +23,6 @@ SECTIONS
      *(.rodata)
      . = ALIGN(4096);
   }
-  PROVIDE( kern_dataend = . );
-
-  . = 0x100000;
 
   .bss :
   {

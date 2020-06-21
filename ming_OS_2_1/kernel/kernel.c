@@ -19,13 +19,12 @@ void kernel_main() {
         "Type END to halt the CPU or PAGE to request a kmalloc()\n> ");
 
     kprint("kernel in memory start: ");      print_hex(kern_start);      kprint("\n");
-    kprint("kern_dataend in memory start  : ");      print_hex(kern_dataend);      kprint("\n");
     kprint("kern_textend in memory start  : ");      print_hex(kern_textend);      kprint("\n");
 
     kprint("kernel in memory end  : ");      print_hex(kern_end);      kprint("\n");
 
 
-    init_pmm();
+    // init_pmm();
 
     //打印保存页表条目的地址空间
     // uint32_t *add=pmm_stack.PhysicalAddr;

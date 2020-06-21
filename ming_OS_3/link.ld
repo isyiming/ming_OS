@@ -24,13 +24,6 @@ SECTIONS
      . = ALIGN(4096);
   }
 
-  .bss :
-  {
-    bss = .; _bss = .; __bss = .;
-    *(.bss)
-    . = ALIGN(4096);
-  }
-
   PROVIDE( kern_end = . );
 
   end = .; _end = .; __end = .;

@@ -1,176 +1,277 @@
 #include "../libc/heap.h"
 
-// 申请内存块
-static void alloc_chunk(uint32_t start, uint32_t len);
 
-// 释放内存块
-static void free_chunk(header_t *chunk);
+heap_t *kheap;
 
-// 切分内存块
-static void split_chunk(header_t *chunk, uint32_t len);
+extern struct page_directory_t *kernel_directory;//内核页目录
 
-// 合并内存块
-static void glue_chunk(header_t *chunk);
 
-static uint32_t heap_max = KHEAP_START;
-
-// 内存块管理头指针
-static header_t *heap_first;
-
-void init_heap()
+static int32_t find_smallest_hole(uint32_t size, uint8_t page_align, heap_t *heap)
 {
-	heap_first = 0;
+   // Find the smallest hole that will fit.
+   uint32_t iterator = 0;
+
+   while (iterator < heap->index.size)
+   {
+       header_t *header = (header_t *)lookup_ordered_array(iterator, &heap->index);
+       // // If the user has requested the memory be page-aligned
+       if (page_align > 0)
+       {
+           // // Page-align the starting point of this header.
+           uint32_t location = (uint32_t)header;
+           int32_t offset = 0;
+           if ((location+sizeof(header_t)) & 0xFFFFF000 != 0)
+               offset = 0x1000 /* page size */  - (location+sizeof(header_t))%0x1000;
+           int32_t hole_size = (int32_t)header->size - offset;
+           // Can we fit now?
+           if (hole_size >= (int32_t)size)
+               break;
+       }
+       else if (header->size >= size)
+           break;
+       iterator++;
+   }
+
+   // Why did the loop exit?
+   if (iterator == heap->index.size)
+       return -1; // We got to the end and didn't find anything.
+   else
+       return iterator;
 }
 
-void *kmalloc_heap_heap(uint32_t len)
+
+static int8_t header_t_less_than(void*a, void *b)
 {
-	// 所有申请的内存长度加上管理头的长度
-	// 因为在内存申请和释放的时候要通过该结构去管理
-	len += sizeof(header_t);
+   return (((header_t*)a)->size < ((header_t*)b)->size)?1:0;
+}
 
-	header_t *cur_header = heap_first;
-	header_t *prev_header = 0;
+heap_t *create_heap(int32_t start, int32_t end_addr, int32_t max, uint8_t supervisor, uint8_t readonly)
+{
+   heap_t *heap = (heap_t*)kmalloc(sizeof(heap_t));
 
-	while (cur_header) {
-		// 如果当前内存块没有被申请过而且长度大于待申请的块
-		if (cur_header->allocated == 0 && cur_header->length >= len) {
-			// 按照当前长度切割内存
-			split_chunk(cur_header, len);
-			cur_header->allocated = 1;
-			// 返回的时候必须将指针挪到管理结构之后
-			return (void *)((uint32_t)cur_header + sizeof(header_t));
+   // All our assumptions are made on startAddress and endAddress being page-aligned.
+   ASSERT("start of the heap is page aligned", start%0x1000 == 0);
+   ASSERT("end of the heap is page aligned", end_addr%0x1000 == 0);
+
+   // Initialise the index.
+   heap->index = place_ordered_array( (void*)start, HEAP_INDEX_SIZE, &header_t_less_than);
+
+   // Shift the start address forward to resemble where we can start putting data.
+   start += sizeof(type_t)*HEAP_INDEX_SIZE;
+
+   // Make sure the start address is page-aligned.
+   if (start & 0xFFFFF000 != 0)
+   {
+       start &= 0xFFFFF000;
+       start += 0x1000;
+   }
+   // Write the start, end and max addresses into the heap structure.
+   heap->start_address = start;
+   heap->end_address = end_addr;
+   heap->max_address = max;
+   heap->supervisor = supervisor;
+   heap->readonly = readonly;
+
+   // We start off with one large hole in the index.
+   header_t *hole = (header_t *)start;
+   hole->size = end_addr-start;
+   hole->magic = HEAP_MAGIC;
+   hole->is_hole = 1;
+   insert_ordered_array((void*)hole, &heap->index);
+
+   return heap;
+}
+
+
+static void expand(uint32_t new_size, heap_t *heap)
+{
+   // Sanity check.
+   ASSERT("expand to a greater size", new_size > heap->end_address - heap->start_address);
+   // Get the nearest following page boundary.
+   if (new_size&0xFFFFF000 != 0)
+   {
+       new_size &= 0xFFFFF000;
+       new_size += 0x1000;
+   }
+   // Make sure we are not overreaching ourselves.
+   ASSERT("don't overflow the heap", heap->start_address+new_size <= heap->max_address);
+
+   // This should always be on a page boundary.
+   uint32_t old_size = heap->end_address-heap->start_address;
+   uint32_t i = old_size;
+   while (i < new_size)
+   {
+       alloc_frame( get_page(heap->start_address+i, 1, kernel_directory),
+                    (heap->supervisor)?1:0, (heap->readonly)?0:1);
+       i += 0x1000 /* page size */;
+   }
+   heap->end_address = heap->start_address+new_size;
+}
+
+static uint32_t contract(uint32_t new_size, heap_t *heap)
+{
+   // Sanity check.
+   ASSERT("expand contract a smaller size", new_size < heap->end_address-heap->start_address);
+   // Get the nearest following page boundary.
+   if (new_size&0x1000)
+   {
+       new_size &= 0x1000;
+       new_size += 0x1000;
+   }
+   // Don't contract too far!
+   if (new_size < HEAP_MIN_SIZE)
+       new_size = HEAP_MIN_SIZE;
+   uint32_t old_size = heap->end_address-heap->start_address;
+   uint32_t i = old_size - 0x1000;
+   while (new_size < i)
+   {
+       free_frame(get_page(heap->start_address+i, 0, kernel_directory));
+       i -= 0x1000;
+   }
+   heap->end_address = heap->start_address + new_size;
+   return new_size;
+}
+
+
+
+void *
+alloc(uint32_t size, uint8_t page_align, heap_t *heap)
+{
+	// Make sure we take the size of header/footer into account.
+	uint32_t new_size = size + sizeof(heap_t) + sizeof(footer_t);
+	// Find the smallest hole that will fit.
+	int32_t iterator = find_smallest_hole(new_size, page_align, heap);
+
+	if (iterator == -1) { // If we didn't find a suitable hole
+		// Save some previous data.
+		uint32_t old_length = heap->end_address - heap->start_address;
+		uint32_t old_end_address = heap->end_address;
+
+		// We need to allocate some more space.
+		expand(old_length + new_size, heap);
+		uint32_t new_length = heap->end_address - heap->start_address;
+
+		// Find the endmost header. (Not endmost in size, but in location).
+		iterator = 0;
+		// Vars to hold the index of, and value of, the endmost header found so far.
+		uint32_t idx = -1; uint32_t value = 0x0;
+		while (iterator < heap->index.size) {
+			uint32_t tmp = (uint32_t)lookup_ordered_array(iterator, &heap->index);
+			if (tmp > value) {
+				value = tmp;
+				idx = iterator;
+			}
+			iterator++;
 		}
-		// 逐次推移指针
-		prev_header = cur_header;
-		cur_header = cur_header->next;
-	}
 
-	uint32_t chunk_start;
-
-	// 第一次执行该函数则初始化内存块起始位置
-	// 之后根据当前指针加上申请的长度即可
-	if (prev_header) {
-		chunk_start = (uint32_t)prev_header + prev_header->length;
-	} else {
-		chunk_start = KHEAP_START;
-		heap_first = (header_t *)chunk_start;
-	}
-
-	// 检查是否需要申请内存页
-	alloc_chunk(chunk_start, len);
-	cur_header = (header_t *)chunk_start;
-	cur_header->prev = prev_header;
-	cur_header->next = 0;
-	cur_header->allocated = 1;
-	cur_header->length = len;
-
-	if (prev_header) {
-		prev_header->next = cur_header;
-	}
-
-	return (void*)(chunk_start + sizeof(header_t));
-}
-
-void kfree(void *p)
-{
-	// 指针回退到管理结构，并将已使用标记置 0
-	header_t *header = (header_t*)((uint32_t)p - sizeof(header_t));
-	header->allocated = 0;
-
-	// 粘合内存块
-	glue_chunk(header);
-}
-
-void alloc_chunk(uint32_t start, uint32_t len)
-{
-	// 如果当前堆的位置已经到达界限则申请内存页
-	// 必须循环申请内存页直到有到足够的可用内存
-	while (start + len > heap_max) {
-		uint32_t page = pmm_alloc_page();
-		map(pgd_kern, heap_max, page, PAGE_PRESENT | PAGE_WRITE);
-		heap_max += PAGE_SIZE;
-	}
-}
-
-void free_chunk(header_t *chunk)
-{
-	if (chunk->prev == 0) {
-		heap_first = 0;
-	} else {
-		chunk->prev->next = 0;
-	}
-
-	// 空闲的内存超过 1 页的话就释放掉
-	while ((heap_max - PAGE_SIZE) >= (uint32_t)chunk) {
-		heap_max -= PAGE_SIZE;
-		uint32_t page;
-		get_mapping(pgd_kern, heap_max, &page);
-		unmap(pgd_kern, heap_max);
-		pmm_free_page(page);
-	}
-}
-
-void split_chunk(header_t *chunk, uint32_t len)
-{
-	// 切分内存块之前得保证之后的剩余内存至少容纳一个内存管理块的大小
-	if (chunk->length - len > sizeof (header_t)) {
-		header_t *newchunk = (header_t *)((uint32_t)chunk + len);
-		newchunk->prev = chunk;
-		newchunk->next = chunk->next;
-		newchunk->allocated = 0;
-		newchunk->length = chunk->length - len;
-
-		chunk->next = newchunk;
-		chunk->length = len;
-	}
-}
-
-void glue_chunk(header_t *chunk)
-{
-	// 如果该内存块后面有链内存块且未被使用则拼合
-	if (chunk->next && chunk->next->allocated == 0) {
-		chunk->length = chunk->length + chunk->next->length;
-		if (chunk->next->next) {
-			chunk->next->next->prev = chunk;
+		// If we didn't find ANY headers, we need to add one.
+		if (idx == -1) {
+      header_t *header = (header_t *)old_end_address;
+      header->magic = HEAP_MAGIC;
+      header->size = new_length - old_length;
+      header->is_hole = 1;
+      footer_t *footer = (footer_t *) (old_end_address + header->size - sizeof(footer_t));
+      footer->magic = HEAP_MAGIC;
+      footer->header = header;
+      insert_ordered_array((void*)header, &heap->index);
+		} else {
+      // The last header needs adjusting.
+      header_t *header = lookup_ordered_array(idx, &heap->index);
+      header->size += new_length - old_length;
+      // Rewrite the footer.
+      footer_t *footer = (footer_t *) ( (uint32_t)header + header->size - sizeof(footer_t) );
+      footer->header = header;
+      footer->magic = HEAP_MAGIC;
 		}
-		chunk->next = chunk->next->next;
-	}
-
-	// 如果该内存块前面有链内存块且未被使用则拼合
-	if (chunk->prev && chunk->prev->allocated == 0) {
-		chunk->prev->length = chunk->prev->length + chunk->length;
-		chunk->prev->next = chunk->next;
-		if (chunk->next) {
-			chunk->next->prev = chunk->prev;
-		}
-		chunk = chunk->prev;
-	}
-
-	// 假如该内存后面没有链表内存块了直接释放掉
-	if (chunk->next == 0) {
-		free_chunk(chunk);
+		// We now have enough space. Recurse, and call the function again.
+    return alloc(size, page_align, heap);
 	}
 }
 
-void test_heap()
+
+
+
+void free(void *p, heap_t *heap)
 {
-	// printk_color(rc_black, rc_magenta, "Test kmalloc_heap() && kfree() now ...\n\n");
+	// Exit gracefully for null pointers.
+	if (p == 0 || heap == NULL)
+		return;
 
-	void *addr1 = kmalloc_heap(50);
-	printk("kmalloc_heap    50 byte in 0x%X\n", addr1);
-	void *addr2 = kmalloc_heap(500);
-	printk("kmalloc_heap   500 byte in 0x%X\n", addr2);
-	void *addr3 = kmalloc_heap(5000);
-	printk("kmalloc_heap  5000 byte in 0x%X\n", addr3);
-	void *addr4 = kmalloc_heap(50000);
-	printk("kmalloc_heap 50000 byte in 0x%X\n\n", addr4);
+	// Get the header and footer associated with this pointer.
+  header_t *header = (header_t*) ( (uint32_t)p - sizeof(header_t) );
+  footer_t *footer = (footer_t*) ( (uint32_t)header + header->size - sizeof(footer_t) );
 
-	printk("free mem in 0x%X\n", addr1);
-	kfree(addr1);
-	printk("free mem in 0x%X\n", addr2);
-	kfree(addr2);
-	printk("free mem in 0x%X\n", addr3);
-	kfree(addr3);
-	printk("free mem in 0x%X\n\n", addr4);
-	kfree(addr4);
+	// Sanity checks.
+	ASSERT("header magic match", header->magic == HEAP_MAGIC);
+	ASSERT("footer magic match", footer->magic == HEAP_MAGIC);
+
+	// Make us a hole.
+	header->is_hole = 1;
+	// Do we want to add this header into the 'free holes' index?
+	char do_add = 1;
+
+  // Unify left
+  // If the thing immediately to the left of us is a footer...
+  footer_t *test_footer = (footer_t*) ( (uint32_t)header - sizeof(footer_t) );
+  if (test_footer->magic == HEAP_MAGIC &&
+      test_footer->header->is_hole == 1)
+  {
+      uint32_t cache_size = header->size; // Cache our current size.
+      header = test_footer->header;     // Rewrite our header with the new one.
+      footer->header = header;          // Rewrite our footer to point to the new header.
+      header->size += cache_size;       // Change the size.
+      do_add = 0;                       // Since this header is already in the index, we don't want to add it again.
+  }
+
+  // Unify right
+  // If the thing immediately to the right of us is a header...
+  header_t *test_header = (header_t*) ( (uint32_t)footer + sizeof(footer_t) );
+  if (test_header->magic == HEAP_MAGIC &&
+      test_header->is_hole)
+  {
+      header->size += test_header->size; // Increase our size.
+      test_footer = (footer_t*) ( (uint32_t)test_header + // Rewrite it's footer to point to our header.
+                                  test_header->size - sizeof(footer_t) );
+      footer = test_footer;
+      // Find and remove this header from the index.
+      uint32_t iterator = 0;
+      while ( (iterator < heap->index.size) &&
+              (lookup_ordered_array(iterator, &heap->index) != (void*)test_header) )
+          iterator++;
+
+      // Make sure we actually found the item.
+      ASSERT("found an item while unifying right", iterator < heap->index.size);
+      // Remove it.
+      remove_ordered_array(iterator, &heap->index);
+  }
+
+  // If the footer location is the end address, we can contract.
+  if ( (uint32_t)footer+sizeof(footer_t) == heap->end_address)
+  {
+      uint32_t old_length = heap->end_address-heap->start_address;
+      uint32_t new_length = contract( (uint32_t)header - heap->start_address, heap);
+      // Check how big we will be after resizing.
+      if (header->size - (old_length-new_length) > 0)
+      {
+          // We will still exist, so resize us.
+          header->size -= old_length-new_length;
+          footer = (footer_t*) ( (uint32_t)header + header->size - sizeof(footer_t) );
+          footer->magic = HEAP_MAGIC;
+          footer->header = header;
+      }
+      else
+      {
+          // We will no longer exist :(. Remove us from the index.
+          uint32_t iterator = 0;
+          while ( (iterator < heap->index.size) &&
+                  (lookup_ordered_array(iterator, &heap->index) != (void*)test_header) )
+              iterator++;
+          // If we didn't find ourselves, we have nothing to remove.
+          if (iterator < heap->index.size)
+              remove_ordered_array(iterator, &heap->index);
+      }
+  }
+
+  if (do_add == 1)
+  insert_ordered_array((void*) header, &heap->index);
 }

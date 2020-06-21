@@ -7,7 +7,8 @@ uint32_t tick = 0;
 
 static void timer_callback(registers_t *regs) {
     tick++;
-    UNUSED(regs);
+    // UNUSED(regs);
+    switch_task();
 }
 
 void init_timer(uint32_t freq) {
@@ -23,4 +24,3 @@ void init_timer(uint32_t freq) {
     port_byte_out(0x40, low);
     port_byte_out(0x40, high);
 }
-

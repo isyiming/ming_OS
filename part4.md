@@ -13,34 +13,35 @@
 page_directory_t *clone_directory(page_directory_t *src)
 {
 		u32int phys;
-		// Make a new page directory and obtain its physical address.
+		// 首先为新的页目录开辟内存空间
 		page_directory_t *dir = (page_directory_t*)kmalloc_ap(sizeof(page_directory_t), &phys);
-		// Ensure that it is blank.
+		// 将页目录所在的内存空间置0
 		memset(dir, 0, sizeof(page_directory_t));
-		// Get the offset of tablesPhysical from the start of the page_directory_t structure.
+		// 设置新的页目录的 physicalAddr
 		u32int offset = (u32int)dir->tablesPhysical - (u32int)dir;
-
-		// Then the physical address of dir->tablesPhysical is:
 		dir->physicalAddr = phys + offset;
 
 		int i;
-		for (i = 0; i < 1024; i++)
+		for (i = 0; i < 128; i++)//我们只有128个页表
 		{
+				//只需要拷贝已经使用的页就可以了
 				if (!src->tables[i])
 						continue;
 						current_directory == kernel_directory;
+						//如果是内核所在的页，那就直接浅复制，只需要指向内核所在的地址就好了。内核所在的页只有1MB以下和256MB以上的空间。
 						if (kernel_directory->tables[i] == src->tables[i])
 		        {
 		           // It's in the kernel, so just use the same pointer.
 		           dir->tables[i] = src->tables[i];
 		           dir->tablesPhysical[i] = src->tablesPhysical[i];
 		        }
+						//如果不是内核页，那就需要复制页表了，但是要开辟新的页。
 		        else
 		        {
 		           // Copy the table.
 		           u32int phys;
 		           dir->tables[i] = clone_table(src->tables[i], &phys);
-		           dir->tablesPhysical[i] = phys | 0x07;
+		           dir->tablesPhysical[i] = phys | 0x07;//8bit对齐
 		        }
 					}
 		return dir;
@@ -48,12 +49,12 @@ page_directory_t *clone_directory(page_directory_t *src)
 
 static page_table_t *clone_table(page_table_t *src, u32int *physAddr)
 {
-   // Make a new page table, which is page aligned.
+   // 为页表开辟空间
    page_table_t *table = (page_table_t*)kmalloc_ap(sizeof(page_table_t), physAddr);
-   // Ensure that the new table is blank.
+   // 置0
    memset(table, 0, sizeof(page_directory_t));
 
-   // For every entry in the table...
+   // 重写页表条目
    int i;
    for (i = 0; i < 1024; i++)
    {
@@ -74,9 +75,7 @@ static page_table_t *clone_table(page_table_t *src, u32int *physAddr)
 }
 ```
 对于内核代码和堆，只需要进行映射这个页表就好了。而属于进程自己的页表，就要复制了。
-
-复制页
-```
+```c
 [GLOBAL copy_page_physical]
 copy_page_physical:
    push ebx              ; According to __cdecl, we must preserve the contents of EBX.
@@ -109,22 +108,19 @@ copy_page_physical:
    pop ebx               ; Get the original value of EBX back.
    ret
 ```
-这段汇编代码是JamesM的教程中的代码，再次感谢JamesM！
-在开始复制分页的时候，要关闭中断，禁用分页。这样保证复制分页顺利进行。实际上Linux的实现上，使用的是写时复制的方式，只有在对某一页写操作的时候，才进行真正的页面复制，否则只是进行页面映射。
+这段汇编代码是JamesM的教程中的代码，再次感谢JamesM！在开始复制分页的时候，要关闭中断，禁用分页。这样保证复制分页顺利进行。实际上Linux的实现上，使用的是写时复制的方式，只有在对某一页写操作的时候，才进行真正的页面复制，否则只是进行页面映射。由于这是区别于虚拟内存中的复制操作，并且对中断和分页的的标志寄存器进行了操作，所以就用汇编来实现了。
 
 ```c
-
 void initialise_paging()
 {
-   // The size of physical memory. For the moment we
-   // assume it is 16MB big.
+   // 对于一个新的进程的页目录初始化，给他一个比较小的初始化内存：16MB
    u32int mem_end_page = 0x1000000;
 
    nframes = mem_end_page / 0x1000;
    frames = (u32int*)kmalloc(INDEX_FROM_BIT(nframes));
    memset(frames, 0, INDEX_FROM_BIT(nframes));
 
-   // Let's make a page directory.
+   // 创建页目录
    u32int phys; // ********** ADDED ***********
    kernel_directory = (page_directory_t*)kmalloc_a(sizeof(page_directory_t));
    memset(kernel_directory, 0, sizeof(page_directory_t));
@@ -186,8 +182,282 @@ void switch_page_directory(page_directory_t *dir)
 }
 ```
 当然这里的分页初始化函数也需要更改了。原来的current_directory直接赋值为kernel_directory。现在我们使用clone_directory，真正为它创建一个独有的页目录和页表。
+current_directory和kernel_directory除了内核空间（1MB以下及256MB以上空间）的地址相同外，其他的空间的真实物理地址是不同的。这样我们就拥有了一个全新的，可以称之为进程的东西在执行啦。
+
+```c
+push esp ;获取内核栈的起始地址
+```
+在kernel_entry.asm，也就是我们的引导程序中开头加上一句push esp。将esp寄存器的值推出。并且在kernel_main(u32int initial_stack)接收它。并将它用一个全局变量保存initial_esp = initial_stack;
+（1）ESP：栈指针寄存器(extended stack pointer)，其内存放着一个指针，该指针永远指向系统栈最上面一个栈帧的栈顶。
+（2）EBP：基址指针寄存器(extended base pointer)，其内存放着一个指针，该指针永远指向系统栈最上面一个栈帧的底部。
+
+```c
+void move_stack(void *new_stack_start, u32int size)
+{
+  u32int i;
+  //栈是由高地址空间向下生长
+  for( i = (u32int)new_stack_start; i >= ((u32int)new_stack_start-size); i -= 0x1000 )
+  {
+    //为栈开辟新的页
+    alloc_frame( get_page(i, 1, current_directory), 0 /* User mode */, 1 /* Is writable */ );
+  }
+	// 每一次对cr3寄存器的写入操作都会更新TLB（后备缓冲期，页表的缓存）
+	u32int pd_addr;
+	asm volatile("mov %%cr3, %0" : "=r" (pd_addr));
+	asm volatile("mov %0, %%cr3" : : "r" (pd_addr));
+
+	// 读取当前栈顶和栈底的指针
+	u32int old_stack_pointer;
+	asm volatile("mov %%esp, %0" : "=r" (old_stack_pointer));
+	u32int old_base_pointer;  
+	asm volatile("mov %%ebp, %0" : "=r" (old_base_pointer));
+	u32int offset            = (u32int)new_stack_start - initial_esp;
+
+	//紧接着当前栈底创建新栈，并复制旧栈内容到新栈
+	u32int new_stack_pointer = old_stack_pointer + offset;
+	u32int new_base_pointer  = old_base_pointer  + offset;
+	memcpy((void*)new_stack_pointer, (void*)old_stack_pointer, initial_esp-old_stack_pointer);
+
+	// Backtrace through the original stack, copying new values into
+	// the new stack.
+	for(i = (u32int)new_stack_start; i > (u32int)new_stack_start-size; i -= 4)
+	{
+	   u32int tmp = * (u32int*)i;
+	   // 要重新遍历新的栈空间中的指针，如果tmp的地址范围是在旧的堆栈范围内，那就说明它是一个指针变量。那么重新将它指向新的栈中对应的位置
+	   if (( old_stack_pointer < tmp) && (tmp < initial_esp))
+	   {
+	     tmp = tmp + offset;
+	     u32int * tmp2 = (u32int*)i;
+	     * tmp2 = tmp;
+	   }
+	}
+	// 最后更改当前栈指针
+	asm volatile("mov %0, %%esp" : : "r" (new_stack_pointer));
+	asm volatile("mov %0, %%ebp" : : "r" (new_base_pointer));
+}
+```
+以上完成了栈的复制。既然页表页目录和栈空间都可以复制了，而堆空间是动态分配的，分页机制会自动给新的堆创建新的页，内核在复制页目录和页表的时候已经映射好了。
+那么我们已经完成了开辟进程的全部准备啦～
+
+```c
+//
+// task.h - Defines the structures and prototypes needed to multitask.
+// Written for JamesM's kernel development tutorials.
+//
+#ifndef TASK_H
+#define TASK_H
+
+#include "common.h"
+#include "paging.h"
+
+// This structure defines a 'task' - a process.
+typedef struct task
+{
+   int id;                // Process ID.
+   u32int esp, ebp;       // Stack and base pointers.
+   u32int eip;            // Instruction pointer.
+   page_directory_t * page_directory; // Page directory.
+   struct task * next;     // The next task in a linked list.
+} task_t;
+
+// Initialises the tasking system.
+void initialise_tasking();
+
+// Called by the timer hook, this changes the running process.
+void task_switch();
+
+// Forks the current process, spawning a new one with a different
+// memory space.
+int fork();
+
+// Causes the current process' stack to be forcibly moved to a new location.
+void move_stack(void * new_stack_start, u32int size);
+
+// Returns the pid of the current process.
+int getpid();
+
+#endif
+
+```
+为每一个进程创建一个结构体task_t来记录它的信息，它的重要信息包括：pid进程id，堆栈指针的物理地址，页目录，指向下一个进程的指针。
+我们切换进程的方式，就是沿着一个链表切换，没有任何调度算法。
+
+```c
+//
+// task.c - Implements the functionality needed to multitask.
+// Written for JamesM's kernel development tutorials.
+//
+
+#include "task.h"
+#include "paging.h"
+
+// The currently running task.
+volatile task_t *current_task;
+
+// The start of the task linked list.
+volatile task_t *ready_queue;
+
+// Some externs are needed to access members in paging.c...
+extern page_directory_t *kernel_directory;
+extern page_directory_t *current_directory;
+extern void alloc_frame(page_t*,int,int);
+extern u32int initial_esp;
+extern u32int read_eip();
+
+// The next available process ID.
+u32int next_pid = 1;
+
+void initialise_tasking()
+{
+	//关闭中断
+	asm volatile("cli");
+
+	// 将栈的移到512MB处
+	move_stack((void*)0x20000000, 0x2000);
+
+	// 初始化内核进程
+	current_task = ready_queue = (task_t*)kmalloc(sizeof(task_t));
+	current_task->id = next_pid++;
+	current_task->esp = current_task->ebp = 0;
+	current_task->eip = 0;
+	current_task->page_directory = current_directory;
+	current_task->next = 0;
+
+	// 启用中断
+	asm volatile("sti");
+}
+```
+初始化进程，其实就是初始化内核进程。这里首先将内核kernel_main的栈移到了512MB位置，也是我们管理的内存的最高地址。
+
+```c
+int fork()
+{
+   // 关闭中断
+   asm volatile("cli");
+
+   // 创建父进程指针
+   task_t * parent_task = (task_t*)current_task;
+
+   // 为新的进程复制页目录
+   page_directory_t * directory = clone_directory(current_directory);
+	 // 为新的进程分配内存.
+	task_t * new_task = (task_t*)kmalloc(sizeof(task_t));
+
+	//新的进程的基本信息
+	new_task->id = next_pid++;
+	new_task->esp = new_task->ebp = 0;
+	new_task->eip = 0;
+	new_task->page_directory = directory;
+	new_task->next = 0;
+
+	// 将新的进程添加到进程链表的末尾
+	task_t * tmp_task = (task_t*)ready_queue;
+	while (tmp_task->next)
+			tmp_task = tmp_task->next;
+	// ...And extend it.
+	tmp_task->next = new_task;
+
+	// We could be the parent or the child here - check.
+	if (current_task == parent_task)
+	{
+			// We are the parent, so set up the esp/ebp/eip for our child.
+			u32int esp; asm volatile("mov %%esp, %0" : "=r"(esp));
+			u32int ebp; asm volatile("mov %%ebp, %0" : "=r"(ebp));
+			new_task->esp = esp;
+			new_task->ebp = ebp;
+			new_task->eip = eip;
+			// All finished: Reenable interrupts.
+			asm volatile("sti");
+			return new_task->id;
+	}
+	else
+	{
+		// We are the child - by convention return 0.
+		return 0;
+	}
+}
+
+```
+在fock()函数中，首先创建一个进程的描述结构new_task，并将其放置在堆上。将该进程添加到进程链表的末尾。
+fork()函数有意思的地方就在于，由于子进程复制了父进程，所以他们会同步执行下去。但是要在函数中区分调用fork的是父进程还是子进程。如果是父进程，那就要获取父进程的栈指针，赋给子进程，并且返回子进程的pid。如果是子进程，只需要返回0就可以了。。
+
+```c
+static void timer_callback(registers_t regs)
+{
+   tick++;
+   switch_task();
+}
+```
+所谓多进程的并发，其实就是分时复用嘛。那就需要之前的定时器回掉函数了。我们在timer_callback中来回切换进程。
+
+```c
+void switch_task()
+{
+   // 要是没有初始化进程，那就直接返回
+   if (!current_task)
+       return;
+	// 读取esp寄存器和ebp寄存器，获取栈顶和栈底
+	u32int esp, ebp, eip;
+	asm volatile("mov %%esp, %0" : "=r"(esp));
+	asm volatile("mov %%ebp, %0" : "=r"(ebp));
+
+	// 读取当前指令位置，保存在eip中。
+	eip = read_eip();
+
+	// 为啥这里有一个这么奇怪的数字，因为切换进程是当前进程执行的，但是切换进程前后，两个进程其实都存在。
+	//那就有两种状态了，对于主动发起切换的进程来说，
+	if (eip == 0x12345)
+			return;
+
+	// 如果没有切换进程的话，就将当前进程的栈指针和指令指针保存记录下
+	current_task->eip = eip;
+	current_task->esp = esp;
+	current_task->ebp = ebp;
+
+	// 获取下一个进程的描述结构
+	current_task = current_task->next;
+	// 要是已经到了链表的末尾了，那就从头开始
+	if (!current_task) current_task = ready_queue;
+
+	//获取新的进程的栈指针
+	esp = current_task->esp;
+	ebp = current_task->ebp;
+
+	// 暂停中断，将新的进程的栈指针和指令指针压入寄存器，通过cr3寄存器更改页目录，把0x12345压入eax寄存器，充当标志，说明刚刚切换了进程，重启中断
+	// 跳转到新的进程的指令处，也就是指令计数器指向的位置
+	asm volatile("         \
+		cli;                 \
+		mov %0, %%ecx;       \
+		mov %1, %%esp;       \
+		mov %2, %%ebp;       \
+		mov %3, %%cr3;       \
+		mov $0x12345, %%eax; \
+		sti;                 \
+		jmp * %%ecx           "
+							 : : "r"(eip), "r"(esp), "r"(ebp), "r"(current_directory->physicalAddr));
+}
+```
+switch_task的工作就是，保存当前进程的上下文和指令计数器位置。切换当前进程为下一个进程，并且更新上下文和指令计数器。在kernelmain中fork一个进程，其实就是内核进程，只不过他们有了不同的栈和堆空间。开启定时器中断，并输出他们的pid。
+
+好了，我的OS学习又告一段落了。这个项目走一遍，对系统的运行又有了更深刻的认识。不过还是感觉时间紧迫，这个项目好多地方并没有做好。
+
+比如说，最开始的系统启动引导过程，我就不应该用os-tutorial的方法。这样内核堆和栈就在1MB以下的空间，所以我都没办法创建完整的映射4GB空间的页表。不然就覆盖掉了显存。
+
+还有我发现fork几个进程后，系统就死机了，估计也是这个原因，不过我没时间解决了。希望秋招后把这个系统的引导方式更改下，做成一个完善的项目，有始有终。
 
 
+
+EAX 是"累加器"(accumulator), 它是很多加法乘法指令的缺省寄存器。
+
+EBX 是"基地址"(base)寄存器, 在内存寻址时存放基地址。
+
+ECX 是计数器(counter), 是重复(REP)前缀指令和LOOP指令的内定计数器。
+
+EDX 则总是被用来放整数除法产生的余数。
+
+ESI/EDI分别叫做"源/目标索引寄存器"(source/destination index),因为在很多字符串操作指令中, DS:ESI指向源串,而ES:EDI指向目标串.
+
+EBP是"基址指针"(BASE POINTER), 它最经常被用作高级语言函数调用的"框架指针"(frame pointer).
 
 
 13.内存映射
