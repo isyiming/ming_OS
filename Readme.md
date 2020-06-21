@@ -11,13 +11,14 @@ os-tutorial确实为我学习操作系统打下了非常好的基础，它让我
 本项目的最初代码来源于os-tutorial的第23节，开发环境：macOS catalina, 需要你安装i386-gcc等开发环境，安装方法在我的笔记里：[系统的启动和引导内核](https://github.com/isyiming/live-up/blob/master/OS/OSpart1.md)
 
 为了方便，本项目和常见系统会有些不同的地方。一般系统的启动是：bios加载磁盘的第一个扇区的引导程序，引导程序再加载内核代码。这时候内核代码一般在0x100000（1MB）内存地址位置处开始。但是本项目直接把内核和引导程序放在一起了。（没想到这个竟然成了我的恶梦，但是我最近实在没时间解决它了。）
+另外，内核堆的起始地址在128MB处，栈顶在512MB处。因为我只为512MB的内存建立了页表。
 
 #### [part1：对物理内存分页](https://github.com/isyiming/ming_OS/blob/master/part1.md)
 #### [part2：分页管理和缺页异常](https://github.com/isyiming/ming_OS/blob/master/part2.md)
 从这里我的程序出了一个致命bug，由于我之前引导和内核统一有bios载入到内存。这导致内核代码部分其实是在1MB以下地址空间开始的，严格的说是在0x1000。堆栈空间也都是在1MB以下的。页表这里只能管理不能映射4GB的内存空间，那样的话就需要4MB的空间来保存页表了。我只管理了512MB内存，对应的页表页目录只有128KB。
 #### [part3：内核堆的实现](https://github.com/isyiming/ming_OS/blob/master/part3.md)
 #### [part4：多进程](https://github.com/isyiming/ming_OS/blob/master/part4.md)
-应该还是part2中的bug发现在fork多次后屏幕直接乱码死机。不过可以实现两个进程的切换，并且通过这个项目，让我对进程有了更深入的了解。
+应该还是part2中的bug发现在fork多次后屏幕直接乱码死机。不过可以实现两个进程的切换。
 
 
 ##### 后续的工作
